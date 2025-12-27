@@ -137,6 +137,7 @@ class Douyin(object):
 
                 # 方法1: 尝试原有的单个视频接口
                 result = self._try_detail_api(aweme_id)
+                logger.info(f'[  提示  ]:请求的作品 id = {aweme_id} 的结果是 {result}')
                 if result:
                     return result
 
@@ -297,7 +298,7 @@ class Douyin(object):
 
                     # 发送请求
                     res = requests.get(url=url, headers=douyin_headers, timeout=10)
-
+                    logger.info(f"[red]x res请求返回data: {res.text}")
                     # 检查HTTP状态码
                     if res.status_code != 200:
                         self.console.print(f"[red]❌ HTTP请求失败: {res.status_code}[/]")
@@ -535,6 +536,8 @@ class Douyin(object):
                     url = self.urls.USER_MIX + utils.getXbogus(mix_params)
 
                     res = requests.get(url=url, headers=douyin_headers, timeout=10)
+
+                    logger.debug(f"合集请求结果: {res.text}")
 
                     # 检查HTTP状态码
                     if res.status_code != 200:

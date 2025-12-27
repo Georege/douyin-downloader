@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  douyin-downloader:
+    environment:
+      - TERM=xterm-256color
+      - TZ=Asia/Shanghai
+    tty: true
+    stdin_open: true
+    build:
+      context: ./douyin-downloader
+      dockerfile: Dockerfile
+    container_name: douyin-downloader
+    volumes:
+      - ./config.yml:/app/config.yml
+      - /nas_rpa_video_files/big_spider_data/DouyinLiveRecorder/抖音短视频:/app/Downloaded

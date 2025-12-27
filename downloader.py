@@ -9,6 +9,7 @@
 import asyncio
 import json
 import logging
+import logging.handlers
 import os
 import re
 import sys
@@ -45,12 +46,22 @@ from apiproxy.common.utils import Utils
 from apiproxy.douyin.auth.cookie_manager import AutoCookieManager
 from apiproxy.douyin.database import DataBase
 
-# 配置日志
+# 创建logs目录
+log_dir = Path('logs')
+log_dir.mkdir(exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('downloader.log', encoding='utf-8'),
+        # 按天轮转的日志处理器
+        logging.handlers.TimedRotatingFileHandler(
+            filename=str(log_dir / 'downloader.log'),
+            when='midnight',  # 每天午夜轮转
+            interval=1,       # 每天轮转一次
+            backupCount=7,    # 保留7天的日志
+            encoding='utf-8'
+        ),
         logging.StreamHandler()
     ]
 )
@@ -555,54 +566,135 @@ class UnifiedDownloader:
             'aid=6383'
         ]
         return '&'.join(params)
+
+
+    def _build_save_path(self, video_info: Dict) -> Path:
+        """构建保存路径，包含抖音号信息"""
+        author_info = video_info.get('author', {})
+        author_name = author_info.get('nickname', 'unknown')
+        
+        # 尝试多种可能的抖音号字段名
+        author_uid = (author_info.get('uid') or 
+                    author_info.get('short_id') or 
+                    author_info.get('user_id') or 
+                    author_info.get('id') or '')
+        
+        # 清理作者名称
+        safe_author_name = self._sanitize_filename(author_name)
+        
+        # 构建目录名：抖音号_作者昵称（只有这一层目录）
+        if author_uid:
+            author_dir = f"{author_uid}_{safe_author_name}"
+        else:
+            # 如果没有抖音号，使用安全ID或生成唯一标识
+            author_sec_uid = author_info.get('sec_uid', '')
+            if author_sec_uid:
+                # 使用sec_uid的前8位作为标识
+                author_dir = f"user_{author_sec_uid[:8]}_{safe_author_name}"
+            else:
+                # 最后备选方案
+                author_dir = f"unknown_{safe_author_name}"
+        
+        # 直接返回两层目录结构，不再创建第三层
+        return self.save_path / author_dir
+
+
+
+    
+    def _build_file_name(self, video_info: Dict, file_type: str, index: int = 0) -> str:
+        """构建文件名，包含短视频ID信息"""
+        aweme_id = video_info.get('aweme_id', 'unknown')
+        desc = video_info.get('desc', '')[:30]
+        create_time = self._format_create_time(video_info.get('create_time'))
+        
+        # 清理描述
+        safe_desc = self._sanitize_filename(desc)
+        
+        # 文件命名规则：视频ID_时间_描述_类型_序号.扩展名
+        base_name = f"{aweme_id}_{create_time}_{safe_desc}"
+        
+        file_extensions = {
+            'video': 'mp4',
+            'music': 'mp3', 
+            'cover': 'jpg',
+            'image': 'jpg',
+            'json': 'json'
+        }
+        
+        if file_type == 'image':
+            return f"{base_name}_image_{index+1}.{file_extensions[file_type]}"
+        else:
+            return f"{base_name}_{file_type}.{file_extensions[file_type]}"
+
+
+    def _sanitize_filename(self, filename: str) -> str:
+        """清理文件名，移除特殊字符"""
+        import re  # 添加这行
+        # 移除Windows非法字符和特殊符号
+        filename = re.sub(r'[\\/:*?"<>|\[\]()【】]', '_', filename)
+        
+        # 将空格和连续下划线替换为中短横
+        filename = re.sub(r'[\s_]+', '-', filename)
+        
+        # 移除首尾的短横
+        filename = filename.strip('-')
+        
+        # 限制长度
+        if len(filename) > 100:
+            filename = filename[:100]
+        
+        return filename if filename else 'unnamed'
+
+    def _format_create_time(self, create_time) -> str:
+        """格式化创建时间"""
+        from datetime import datetime
+        import time
+        
+        dt_obj = None
+        if isinstance(create_time, (int, float)):
+            dt_obj = datetime.fromtimestamp(create_time)
+        elif isinstance(create_time, str) and create_time:
+            for fmt in ('%Y-%m-%d %H.%M.%S', '%Y-%m-%d_%H-%M-%S', '%Y-%m-%d %H:%M:%S'):
+                try:
+                    dt_obj = datetime.strptime(create_time, fmt)
+                    break
+                except Exception:
+                    pass
+        if dt_obj is None:
+            dt_obj = datetime.fromtimestamp(time.time())
+        
+        return dt_obj.strftime('%Y-%m-%d_%H-%M-%S')
+
+    
     
     async def _download_media_files(self, video_info: Dict, progress=None) -> bool:
-        """下载媒体文件"""
+        """下载媒体文件（改进版）"""
         try:
-            # 判断类型
-            is_image = bool(video_info.get('images'))
-            
-            # 构建保存路径
-            author_name = video_info.get('author', {}).get('nickname', 'unknown')
-            desc = video_info.get('desc', '')[:50].replace('/', '_')
-            # 兼容 create_time 为时间戳或格式化字符串
-            raw_create_time = video_info.get('create_time')
-            dt_obj = None
-            if isinstance(raw_create_time, (int, float)):
-                dt_obj = datetime.fromtimestamp(raw_create_time)
-            elif isinstance(raw_create_time, str) and raw_create_time:
-                for fmt in ('%Y-%m-%d %H.%M.%S', '%Y-%m-%d_%H-%M-%S', '%Y-%m-%d %H:%M:%S'):
-                    try:
-                        dt_obj = datetime.strptime(raw_create_time, fmt)
-                        break
-                    except Exception:
-                        pass
-            if dt_obj is None:
-                dt_obj = datetime.fromtimestamp(time.time())
-            create_time = dt_obj.strftime('%Y-%m-%d_%H-%M-%S')
-            
-            folder_name = f"{create_time}_{desc}" if desc else create_time
-            save_dir = self.save_path / author_name / folder_name
+            # 构建保存路径（包含抖音号信息）
+            save_dir = self._build_save_path(video_info)
             save_dir.mkdir(parents=True, exist_ok=True)
             
             success = True
+            is_image = bool(video_info.get('images'))
             
             if is_image:
-                # 下载图文（无水印）
+                # 下载图文
                 images = video_info.get('images', [])
                 for i, img in enumerate(images):
                     img_url = self._get_best_quality_url(img.get('url_list', []))
                     if img_url:
-                        file_path = save_dir / f"image_{i+1}.jpg"
+                        file_name = self._build_file_name(video_info, 'image', i)
+                        file_path = save_dir / file_name
                         if await self._download_file(img_url, file_path):
                             logger.info(f"下载图片 {i+1}/{len(images)}: {file_path.name}")
                         else:
                             success = False
             else:
-                # 下载视频（无水印）
+                # 下载视频
                 video_url = self._get_no_watermark_url(video_info)
                 if video_url:
-                    file_path = save_dir / f"{folder_name}.mp4"
+                    file_name = self._build_file_name(video_info, 'video')
+                    file_path = save_dir / file_name
                     if await self._download_file(video_url, file_path):
                         logger.info(f"下载视频: {file_path.name}")
                     else:
@@ -612,19 +704,22 @@ class UnifiedDownloader:
                 if self.config.get('music', True):
                     music_url = self._get_music_url(video_info)
                     if music_url:
-                        file_path = save_dir / f"{folder_name}_music.mp3"
+                        file_name = self._build_file_name(video_info, 'music')
+                        file_path = save_dir / file_name
                         await self._download_file(music_url, file_path)
             
             # 下载封面
             if self.config.get('cover', True):
                 cover_url = self._get_cover_url(video_info)
                 if cover_url:
-                    file_path = save_dir / f"{folder_name}_cover.jpg"
+                    file_name = self._build_file_name(video_info, 'cover')
+                    file_path = save_dir / file_name
                     await self._download_file(cover_url, file_path)
             
             # 保存JSON数据
             if self.config.get('json', True):
-                json_path = save_dir / f"{folder_name}_data.json"
+                file_name = self._build_file_name(video_info, 'json')
+                json_path = save_dir / file_name
                 with open(json_path, 'w', encoding='utf-8') as f:
                     json.dump(video_info, f, ensure_ascii=False, indent=2)
             
@@ -633,6 +728,7 @@ class UnifiedDownloader:
         except Exception as e:
             logger.error(f"下载媒体文件失败: {e}")
             return False
+
     
     def _get_no_watermark_url(self, video_info: Dict) -> Optional[str]:
         """获取无水印视频URL"""
@@ -719,6 +815,7 @@ class UnifiedDownloader:
     
     async def download_user_page(self, url: str) -> bool:
         """下载用户主页内容"""
+        logger.info(f"正在下载用户主页: {url}")
         try:
             # 提取用户ID
             user_id = self.extract_id_from_url(url, ContentType.USER)
@@ -727,6 +824,7 @@ class UnifiedDownloader:
                 return False
             
             console.print(f"\n[cyan]正在获取用户 {user_id} 的作品列表...[/cyan]")
+            logger.info(f"\n[cyan]正在获取用户 {user_id} 的作品列表...[/cyan]")
             
             # 根据配置下载不同类型的内容
             mode = self.config.get('mode', ['post'])
@@ -760,11 +858,13 @@ class UnifiedDownloader:
     
     async def _download_user_posts(self, user_id: str):
         """下载用户发布的作品"""
+        logger.info(f"正在下载用户 {user_id} 的 发布 作品列表...")
         max_count = self.config.get('number', {}).get('post', 0)
         cursor = 0
         downloaded = 0
         
         console.print(f"\n[green]开始下载用户发布的作品...[/green]")
+        logger.info(f"\n[green]开始下载用户发布的作品...[/green]")
         
         with Progress(
             SpinnerColumn(),
@@ -780,7 +880,8 @@ class UnifiedDownloader:
                 await self.rate_limiter.acquire()
                 
                 # 获取作品列表
-                posts_data = await self._fetch_user_posts(user_id, cursor)
+                posts_data = await self._fetch_user_posts(user_id, cursor) 
+                logger.info(f'获取作品列表返回值 posts data: {posts_data}')
                 if not posts_data:
                     break
                 
@@ -829,13 +930,21 @@ class UnifiedDownloader:
         console.print(f"[green]✅ 用户作品下载完成，共下载 {downloaded} 个[/green]")
     
     async def _fetch_user_posts(self, user_id: str, cursor: int = 0) -> Optional[Dict]:
-        """获取用户作品列表"""
+        """获取用户作品列表 - 增强调试版"""
         try:
-            # 直接使用 Douyin 类的 getUserInfo 方法，就像 DouYinCommand.py 那样
+            # 直接使用 Douyin 类的 getUserInfo 方法
             from apiproxy.douyin.douyin import Douyin
             
             # 创建 Douyin 实例
             dy = Douyin(database=False)
+
+            # 详细的调试信息
+            logger.info(f"🕒 开始调用Douyin API")
+            logger.info(f"🔍 用户ID sec_uid: {user_id}")
+            logger.info(f"🔍 当前时间: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+            
+            # 记录开始时间
+            start_time = time.time()
             
             # 获取用户作品列表
             result = dy.getUserInfo(
@@ -847,9 +956,26 @@ class UnifiedDownloader:
                 "",  # start_time
                 ""   # end_time
             )
+            logger.info(f'获取作品列表返回值 result: {result}')
+            
+            # 记录结束时间
+            end_time = time.time()
+            duration = end_time - start_time
             
             if result:
-                logger.info(f"Douyin 类成功获取用户作品列表，共 {len(result)} 个作品")
+                logger.info(f"✅ Douyin API调用成功")
+                logger.info(f"📊 获取到 {len(result)} 个作品")
+                logger.info(f"⏱️ 请求耗时: {duration:.2f} 秒")
+                
+                # 显示第一个作品的详细信息（用于调试）
+                if result and len(result) > 0:
+                    first_aweme = result[0]
+                    logger.info(f"📝 第一个作品信息:")
+                    logger.info(f"   - 作品ID: {first_aweme.get('aweme_id', '未知')}")
+                    logger.info(f"   - 作者: {first_aweme.get('author', {}).get('nickname', '未知')}")
+                    logger.info(f"   - 描述: {first_aweme.get('desc', '无描述')[:50]}...")
+                    logger.info(f"   - 创建时间: {first_aweme.get('create_time', '未知')}")
+                
                 # 转换为期望的格式
                 return {
                     'status_code': 0,
@@ -858,15 +984,36 @@ class UnifiedDownloader:
                     'has_more': False
                 }
             else:
-                logger.error("Douyin 类返回空结果")
+                logger.error("❌ Douyin API返回空结果")
+                logger.error(f"🔍 详细诊断信息:")
+                logger.error(f"   - 用户ID: {user_id}")
+                logger.error(f"   - 请求耗时: {duration:.2f} 秒")
+                logger.error(f"   - 可能原因分析:")
+                logger.error(f"     1. Cookie过期或无效")
+                logger.error(f"     2. API接口变更")
+                logger.error(f"     3. 反爬虫限制")
+                logger.error(f"     4. 用户隐私设置")
+                logger.error(f"     5. 网络连接问题")
+                
+                # 添加更多调试信息
+                logger.error(f"🔧 建议检查:")
+                logger.error(f"   - 检查config.yml中的Cookie是否有效")
+                logger.error(f"   - 检查网络连接和代理设置")
+                logger.error(f"   - 尝试手动访问该用户主页确认是否公开")
+                
                 return None
                 
         except Exception as e:
-            logger.error(f"获取用户作品列表失败: {e}")
+            logger.error(f"💥 获取用户作品列表异常: {e}")
             import traceback
-            traceback.print_exc()
-        
-        return None
+            # 将完整的异常堆栈写入日志
+            logger.error("🔍 异常堆栈:")
+            for line in traceback.format_exc().split('\n'):
+                if line.strip():
+                    logger.error(f"   {line}")
+            
+            return None
+
     
     async def _download_user_likes(self, user_id: str):
         """下载用户喜欢的作品"""
