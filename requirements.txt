@@ -23,3 +23,6 @@ black==23.11.0           # 代码格式化
 # 其他可能需要的包
 python-dateutil>=2.8.2
 requests-toolbelt>=1.0.0
+
+# brotli
+brotli>=1.2.0
