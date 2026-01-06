@@ -170,3 +170,4 @@ dy-downloader/config/cookies.json
 
 config.yml
 cookies_backup_*
+logs/*

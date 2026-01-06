@@ -46,26 +46,7 @@ from apiproxy.common.utils import Utils
 from apiproxy.douyin.auth.cookie_manager import AutoCookieManager
 from apiproxy.douyin.database import DataBase
 
-# 创建logs目录
-log_dir = Path('logs')
-log_dir.mkdir(exist_ok=True)
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        # 按天轮转的日志处理器
-        logging.handlers.TimedRotatingFileHandler(
-            filename=str(log_dir / 'downloader.log'),
-            when='midnight',  # 每天午夜轮转
-            interval=1,       # 每天轮转一次
-            backupCount=7,    # 保留7天的日志
-            encoding='utf-8'
-        ),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
+from utils.logger import logger
 
 # Rich console
 console = Console()
@@ -187,7 +168,7 @@ class UnifiedDownloader:
                 return {}
         
         with open(config_path, 'r', encoding='utf-8') as f:
-            config = yaml.safe_load(f)
+            config = yaml.safe_load(f) or {}
         
         # 简化配置兼容：links/link, output_dir/path, cookie/cookies
         if 'links' in config and 'link' not in config:
@@ -198,6 +179,54 @@ class UnifiedDownloader:
             config['cookies'] = config['cookie']
         if isinstance(config.get('cookies'), str) and config.get('cookies') == 'auto':
             config['auto_cookie'] = True
+
+        # ========== 新增：从 Doris 数据库读取链接 ==========
+        doris_config = config.get('doris', {})
+        if doris_config.get('enabled', False):
+            logger.info("检测到 Doris 数据库配置，开始从数据库读取链接...")
+            try:
+                # 导入 Doris 客户端
+                from apiproxy.douyin.doris_client import DorisConnection
+                
+                # 创建连接
+                with DorisConnection(
+                    host=doris_config.get('host', 'localhost'),
+                    port=doris_config.get('port', 9030),
+                    database=doris_config.get('database', ''),
+                    user=doris_config.get('user', 'root'),
+                    password=doris_config.get('password', '')
+                ) as doris:
+                    # 检查是使用简单配置还是自定义 SQL
+                    if doris_config.get('custom_sql'):
+                        # 使用自定义 SQL
+                        urls = doris.fetch_user_links_custom_sql(
+                            sql=doris_config['custom_sql'],
+                            url_column=doris_config.get('url_column', 'url')
+                        )
+                    else:
+                        # 使用简单表查询
+                        urls = doris.fetch_user_links(
+                            table_name=doris_config.get('table', ''),
+                            url_column=doris_config.get('url_column', 'url'),
+                            where_clause=doris_config.get('where_clause', ''),
+                            limit=doris_config.get('limit', 0)
+                        )
+                    
+                    if urls:
+                        # 将从数据库读取的链接设置到配置中
+                        config['link'] = urls
+                        logger.info(f"✅ 成功从 Doris 数据库读取 {len(urls)} 个链接")
+                        console.print(f"[green]✅ 成功从 Doris 数据库读取 {len(urls)} 个链接[/green]")
+                    else:
+                        logger.warning("⚠️ 从 Doris 数据库未获取到任何链接")
+                        console.print("[yellow]⚠️ 从 Doris 数据库未获取到任何链接[/yellow]")
+            except ImportError:
+                logger.error("❌ 未找到 doris_client 模块，请确保 pymysql 已安装")
+                console.print("[red]❌ 未找到 doris_client 模块，请运行: pip install pymysql[/red]")
+            except Exception as e:
+                logger.error(f"❌ 从 Doris 数据库读取链接失败: {e}")
+                console.print(f"[red]❌ 从 Doris 数据库读取链接失败: {e}[/red]")
+        # ========== 结束：Doris 数据库读取 ==========
         
         # 允许无 link（通过命令行传入）
         # 如果两者都没有，后续会在运行时提示
