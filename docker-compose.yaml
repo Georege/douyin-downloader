@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   douyin-downloader:
     environment:
@@ -12,5 +10,7 @@ services:
       dockerfile: Dockerfile
     container_name: douyin-downloader
     volumes:
+      - ./data.db:/app/data.db
       - ./config.yml:/app/config.yml
-      - /nas_rpa_video_files/big_spider_data/DouyinLiveRecorder/抖音短视频:/app/Downloaded
+      - ./logs:/app/logs
+      - /nas_rpa_video_files/big_spider_data/douyin-downloader/抖音短视频:/app/Downloaded
